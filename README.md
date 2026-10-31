@@ -1,115 +1,88 @@
 # secret-audit-log
 
-Read and display a secret audit trail without printing secret values.
+Read a secret access trail without handling secret values.
 
 ## What it does
 
-When tools request secrets during execution, they should log access metadata: timestamp, tool name, secret name, and reason for access. This tool reads that log and displays the audit trail as a table or JSON, filtering by tool, secret, or reason substring.
+The command reads access metadata and prints a table or JSON. Each event records
+when access was requested, which tool requested it, which secret name was used,
+and why.
 
-The secret values themselves are never printed, only access metadata.
+The output contains only these four metadata fields. The `secret` field must be
+the name of the secret, not its value. This program does not fetch, resolve, or
+redact values that were written into a log by mistake.
 
-## Installation
+## Requirements
 
-```bash
-pip install -e .
-```
-
-Or run directly:
+Python 3 and the standard library. There is no package metadata in this small
+repository, so run the script directly.
 
 ```bash
 python secret_audit_log.py <log_file> [options]
 ```
 
+## Log format
+
+The reader accepts a JSON array:
+
+```json
+[
+  {
+    "timestamp": "2026-10-31T10:00:00Z",
+    "tool": "my-app",
+    "secret": "db_password",
+    "reason": "initialize connection"
+  }
+]
+```
+
+It also accepts an object containing an `entries` array, or JSON Lines with one
+event object per line. Blank JSON Lines are ignored.
+
+Every event must contain non-empty string values for `timestamp`, `tool`,
+`secret`, and `reason`. Timestamps must be ISO 8601 values. Invalid files are
+reported on stderr and do not produce partial output.
+
 ## Usage
 
-### Basic usage
-
-Display all audit entries as a table:
+Show all events as a table:
 
 ```bash
 python secret_audit_log.py audit.log
 ```
 
-### Output formats
-
-Table (default):
-
-```bash
-python secret_audit_log.py audit.log --format table
-```
-
-JSON:
+Select JSON output:
 
 ```bash
 python secret_audit_log.py audit.log --format json
 ```
 
-### Filtering
-
-Filter by tool name:
-
-```bash
-python secret_audit_log.py audit.log --filter my-app
-```
-
-Filter by secret name:
-
-```bash
-python secret_audit_log.py audit.log --filter db_password
-```
-
-Filter by reason (substring):
+Filter with a case-insensitive substring. The filter searches the tool, secret
+name, and reason fields:
 
 ```bash
 python secret_audit_log.py audit.log --filter timeout
 ```
 
-### Limiting output
-
-Show only the last 10 entries:
+Show only the last 10 events:
 
 ```bash
 python secret_audit_log.py audit.log --limit 10
 ```
 
-Combine filters and limits:
+`--limit 0` shows no events. Negative limits are rejected.
 
-```bash
-python secret_audit_log.py audit.log --filter my-app --limit 5 --format json
-```
-
-## Log format
-
-The audit log is a JSON file containing an array of entries:
-
-```json
-[
-  {
-    "timestamp": "2026-10-31T10:00:00",
-    "tool": "my-app",
-    "secret": "db_password",
-    "reason": "initialize connection"
-  },
-  {
-    "timestamp": "2026-10-31T10:05:00",
-    "tool": "another-tool",
-    "secret": "api_key",
-    "reason": "external service call"
-  }
-]
-```
-
-Each entry must have:
-- timestamp: ISO 8601 format
-- tool: name of the tool requesting the secret
-- secret: name of the secret (not its value)
-- reason: human-readable reason for the request
+The command exits with status 0 on success and status 1 when the file cannot be
+read or does not match the log format. Argument errors use the normal argparse
+status 2.
 
 ## Testing
 
 ```bash
-python -m unittest test_secret_audit_log
+python -m unittest -v
 ```
+
+The tests use local temporary files only. They do not make network requests.
 
 ## License
 
