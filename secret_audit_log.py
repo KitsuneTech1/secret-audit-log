@@ -1,104 +1,199 @@
 #!/usr/bin/env python3
-"""Read and display a secret audit trail without printing secrets."""
+"""Read and display a secret audit trail without printing secret values."""
 
+import argparse
 import json
 import sys
 from datetime import datetime
-from argparse import ArgumentParser
 from pathlib import Path
 
 
-def load_log(log_path):
-    """Load JSON log file. Return list of entries."""
+PUBLIC_FIELDS = ("timestamp", "tool", "secret", "reason")
+
+
+class AuditLogError(ValueError):
+    """Raised when an audit log cannot be read or does not match its format."""
+
+
+def _validate_entry(entry, index):
+    if not isinstance(entry, dict):
+        raise AuditLogError(f"Entry {index} is not an object")
+
+    missing = [field for field in PUBLIC_FIELDS if field not in entry]
+    if missing:
+        raise AuditLogError(
+            f"Entry {index} is missing metadata: {', '.join(missing)}"
+        )
+
+    for field in PUBLIC_FIELDS:
+        value = entry[field]
+        if not isinstance(value, str) or not value.strip():
+            raise AuditLogError(f"Entry {index} has invalid {field} metadata")
+
     try:
-        with open(log_path, 'r') as f:
-            data = json.load(f)
-        # Support both direct list and {entries: []} format
-        if isinstance(data, dict):
-            return data.get('entries', [])
-        return data if isinstance(data, list) else []
-    except FileNotFoundError:
-        print(f"Error: Log file not found: {log_path}", file=sys.stderr)
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON in {log_path}: {e}", file=sys.stderr)
-        sys.exit(1)
+        datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AuditLogError(f"Entry {index} has an invalid timestamp") from exc
+
+    return entry
+
+
+def _validate_entries(data):
+    if isinstance(data, dict):
+        if "entries" not in data:
+            raise AuditLogError("Log object must contain an 'entries' list")
+        data = data["entries"]
+
+    if not isinstance(data, list):
+        raise AuditLogError("Log must be a JSON list or an object with an 'entries' list")
+
+    return [_validate_entry(entry, index) for index, entry in enumerate(data)]
+
+
+def _parse_json_lines(text):
+    entries = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            raise AuditLogError(f"Invalid JSON on line {line_number}: {exc.msg}") from exc
+    return _validate_entries(entries)
+
+
+def load_log(log_path):
+    """Load a JSON array, entries envelope, or JSON Lines audit log."""
+    path = Path(log_path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise AuditLogError(f"Log file not found: {log_path}") from exc
+    except UnicodeError as exc:
+        raise AuditLogError(f"Log file is not valid UTF-8: {log_path}") from exc
+    except OSError as exc:
+        detail = exc.strerror or "could not read file"
+        raise AuditLogError(f"Could not read log file {log_path}: {detail}") from exc
+
+    if not text.strip():
+        return []
+
+    try:
+        return _validate_entries(json.loads(text))
+    except json.JSONDecodeError as exc:
+        try:
+            return _parse_json_lines(text)
+        except AuditLogError as line_error:
+            raise AuditLogError(f"Invalid JSON in {log_path}: {exc.msg}") from line_error
 
 
 def filter_entries(entries, filter_str):
     """Filter entries by substring match in tool, secret, or reason."""
-    if not filter_str:
+    if filter_str is None or filter_str == "":
         return entries
-    filter_lower = filter_str.lower()
+
+    filter_lower = str(filter_str).casefold()
     return [
-        e for e in entries
-        if (filter_lower in str(e.get('tool', '')).lower() or
-            filter_lower in str(e.get('secret', '')).lower() or
-            filter_lower in str(e.get('reason', '')).lower())
+        entry for entry in entries
+        if isinstance(entry, dict)
+        and any(filter_lower in str(entry.get(field, "")).casefold()
+                for field in ("tool", "secret", "reason"))
     ]
 
 
-def format_table(entries, limit=None):
-    """Format entries as aligned table."""
-    if limit:
-        entries = entries[-limit:]
+def _select_entries(entries, limit):
+    if limit is None:
+        return list(entries)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+        raise ValueError("limit must be a non-negative integer")
+    if limit == 0:
+        return []
+    return list(entries[-limit:])
 
+
+def _public_entry(entry):
+    return {field: entry[field] for field in PUBLIC_FIELDS}
+
+
+def _table_value(value):
+    return str(value).replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+
+
+def format_table(entries, limit=None):
+    """Format entries as an aligned table containing metadata only."""
+    entries = _select_entries(entries, limit)
     if not entries:
         return "No entries found."
 
-    # Calculate column widths
-    max_time = max(len(e.get('timestamp', '')[:19]) for e in entries) if entries else 19
-    max_tool = max(len(e.get('tool', '')) for e in entries) if entries else 10
-    max_secret = max(len(e.get('secret', '')) for e in entries) if entries else 10
-    max_reason = max(len(e.get('reason', '')) for e in entries) if entries else 15
+    headers = ("Timestamp", "Tool", "Secret", "Reason")
+    rows = [
+        [_table_value(_public_entry(entry)[field]) for field in PUBLIC_FIELDS]
+        for entry in entries
+    ]
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(headers)
+    ]
 
-    max_time = max(max_time, 19)
-    max_tool = max(max_tool, 10)
-    max_secret = max(max_secret, 10)
-    max_reason = max(max_reason, 15)
-
-    # Header
-    header = f"{'Timestamp':<{max_time}} {'Tool':<{max_tool}} {'Secret':<{max_secret}} {'Reason':<{max_reason}}"
-    lines = [header, '-' * (max_time + max_tool + max_secret + max_reason + 3)]
-
-    # Rows
-    for entry in entries:
-        ts = str(entry.get('timestamp', ''))[:19]
-        tool = str(entry.get('tool', ''))[:max_tool]
-        secret = str(entry.get('secret', ''))[:max_secret]
-        reason = str(entry.get('reason', ''))[:max_reason]
-        lines.append(f"{ts:<{max_time}} {tool:<{max_tool}} {secret:<{max_secret}} {reason:<{max_reason}}")
-
-    return '\n'.join(lines)
+    header = " ".join(f"{label:<{width}}" for label, width in zip(headers, widths))
+    separator = "-" * (sum(widths) + len(widths) - 1)
+    lines = [header, separator]
+    lines.extend(
+        " ".join(f"{value:<{width}}" for value, width in zip(row, widths))
+        for row in rows
+    )
+    return "\n".join(lines)
 
 
 def format_json(entries, limit=None):
-    """Format entries as JSON."""
-    if limit:
-        entries = entries[-limit:]
-    return json.dumps(entries, indent=2)
+    """Format selected entries as JSON containing metadata only."""
+    selected = _select_entries(entries, limit)
+    return json.dumps([_public_entry(entry) for entry in selected], indent=2)
 
 
-def main():
-    parser = ArgumentParser(description='Read and display a secret audit trail.')
-    parser.add_argument('log_path', help='Path to the audit log JSON file')
-    parser.add_argument('--format', choices=['table', 'json'], default='table',
-                        help='Output format (default: table)')
-    parser.add_argument('--filter', help='Filter by substring in tool, secret, or reason')
-    parser.add_argument('--limit', type=int, help='Show only last N entries')
+def _non_negative_int(value):
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("limit must be a non-negative integer") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("limit must be a non-negative integer")
+    return number
 
-    args = parser.parse_args()
 
-    entries = load_log(args.log_path)
-    entries = filter_entries(entries, args.filter)
+def build_parser():
+    parser = argparse.ArgumentParser(description="Read and display a secret audit trail.")
+    parser.add_argument("log_path", help="Path to the audit log file")
+    parser.add_argument(
+        "--format", choices=["table", "json"], default="table",
+        help="Output format (default: table)",
+    )
+    parser.add_argument(
+        "--filter", help="Case-insensitive substring in tool, secret, or reason"
+    )
+    parser.add_argument(
+        "--limit", type=_non_negative_int,
+        help="Show only the last N entries (zero shows none)",
+    )
+    return parser
 
-    if args.format == 'json':
-        output = format_json(entries, args.limit)
-    else:
-        output = format_table(entries, args.limit)
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+
+    try:
+        entries = filter_entries(load_log(args.log_path), args.filter)
+        if args.format == "json":
+            output = format_json(entries, args.limit)
+        else:
+            output = format_table(entries, args.limit)
+    except AuditLogError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     print(output)
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())
