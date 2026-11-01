@@ -41,7 +41,8 @@ event object per line. Blank JSON Lines are ignored.
 
 Every event must contain non-empty string values for `timestamp`, `tool`,
 `secret`, and `reason`. Timestamps must be ISO 8601 values. Invalid files are
-reported on stderr and do not produce partial output.
+reported on stderr and do not produce partial output. Files larger than 16 MiB
+are rejected before parsing.
 
 ## Usage
 

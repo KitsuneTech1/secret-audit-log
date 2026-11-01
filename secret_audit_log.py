@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 PUBLIC_FIELDS = ("timestamp", "tool", "secret", "reason")
+MAX_LOG_BYTES = 16 * 1024 * 1024
 
 
 class AuditLogError(ValueError):
@@ -57,34 +58,50 @@ def _parse_json_lines(text):
             continue
         try:
             entries.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise AuditLogError(f"Invalid JSON on line {line_number}: {exc.msg}") from exc
+        except (ValueError, RecursionError) as exc:
+            detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+            raise AuditLogError(f"Invalid JSON on line {line_number}: {detail}") from exc
     return _validate_entries(entries)
 
 
 def load_log(log_path):
     """Load a JSON array, entries envelope, or JSON Lines audit log."""
-    path = Path(log_path)
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        path = Path(log_path)
+    except (TypeError, ValueError) as exc:
+        raise AuditLogError("Invalid log path") from exc
+
+    try:
+        with path.open("rb") as log_file:
+            raw = log_file.read(MAX_LOG_BYTES + 1)
+        text = raw.decode("utf-8-sig")
     except FileNotFoundError as exc:
-        raise AuditLogError(f"Log file not found: {log_path}") from exc
+        raise AuditLogError("Log file not found") from exc
     except UnicodeError as exc:
-        raise AuditLogError(f"Log file is not valid UTF-8: {log_path}") from exc
+        raise AuditLogError("Log file is not valid UTF-8") from exc
+    except ValueError as exc:
+        raise AuditLogError("Could not read log file") from exc
     except OSError as exc:
         detail = exc.strerror or "could not read file"
-        raise AuditLogError(f"Could not read log file {log_path}: {detail}") from exc
+        raise AuditLogError(f"Could not read log file: {detail}") from exc
+
+    if len(raw) > MAX_LOG_BYTES:
+        raise AuditLogError("Log file is too large")
 
     if not text.strip():
         return []
 
     try:
-        return _validate_entries(json.loads(text))
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         try:
             return _parse_json_lines(text)
         except AuditLogError as line_error:
-            raise AuditLogError(f"Invalid JSON in {log_path}: {exc.msg}") from line_error
+            raise AuditLogError(f"Invalid JSON: {exc.msg}") from line_error
+    except (ValueError, RecursionError) as exc:
+        raise AuditLogError(f"Invalid JSON: {exc}") from exc
+
+    return _validate_entries(parsed)
 
 
 def filter_entries(entries, filter_str):
