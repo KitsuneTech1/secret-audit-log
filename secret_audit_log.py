@@ -66,7 +66,7 @@ def load_log(log_path):
     """Load a JSON array, entries envelope, or JSON Lines audit log."""
     path = Path(log_path)
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:
         raise AuditLogError(f"Log file not found: {log_path}") from exc
     except UnicodeError as exc:
@@ -116,7 +116,23 @@ def _public_entry(entry):
 
 
 def _table_value(value):
-    return str(value).replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    escaped = []
+    for character in str(value):
+        if character == "\r":
+            escaped.append("\\r")
+        elif character == "\n":
+            escaped.append("\\n")
+        elif character == "\t":
+            escaped.append("\\t")
+        elif not character.isprintable():
+            codepoint = ord(character)
+            if codepoint <= 0xFF:
+                escaped.append(f"\\x{codepoint:02x}")
+            else:
+                escaped.append(f"\\u{codepoint:04x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
 
 
 def format_table(entries, limit=None):
