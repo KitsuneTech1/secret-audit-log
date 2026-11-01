@@ -3,9 +3,11 @@
 
 import unittest
 import json
-from pathlib import Path
+import os
+import tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 
 # Import the module
 import secret_audit_log
@@ -37,13 +39,18 @@ class TestSecretAuditLog(unittest.TestCase):
             }
         ]
 
-        self.log_path = Path(__file__).with_name('.secret-audit-log-test.json')
+        fd, log_path = tempfile.mkstemp(prefix='.secret-audit-log-test-', suffix='.json')
+        os.close(fd)
+        self.log_path = Path(log_path)
 
         with self.log_path.open('w', encoding='utf-8') as f:
             json.dump(self.sample_data, f)
 
     def tearDown(self):
-        self.log_path.unlink(missing_ok=True)
+        try:
+            os.unlink(self.log_path)
+        except FileNotFoundError:
+            pass
 
     def write_log(self, data):
         with self.log_path.open('w', encoding='utf-8') as f:
@@ -84,6 +91,11 @@ class TestSecretAuditLog(unittest.TestCase):
         with self.assertRaises(secret_audit_log.AuditLogError):
             secret_audit_log.load_log(self.log_path)
 
+    def test_load_rejects_invalid_path_without_typeerror(self):
+        """Invalid library arguments use the same public error type as bad files."""
+        with self.assertRaisesRegex(secret_audit_log.AuditLogError, 'Invalid log path'):
+            secret_audit_log.load_log(None)
+
     def test_load_rejects_missing_metadata(self):
         """Reject entries without all required metadata fields."""
         invalid_entry = dict(self.sample_data[0])
@@ -100,6 +112,34 @@ class TestSecretAuditLog(unittest.TestCase):
         self.write_log([invalid_entry])
 
         with self.assertRaises(secret_audit_log.AuditLogError):
+            secret_audit_log.load_log(self.log_path)
+
+    def test_load_rejects_deeply_nested_json_without_traceback(self):
+        """Malformed nesting becomes a normal audit-log error."""
+        with open(self.log_path, 'w', encoding='utf-8') as log_file:
+            log_file.write('[' * 1100 + ']' * 1100)
+
+        with self.assertRaises(secret_audit_log.AuditLogError):
+            secret_audit_log.load_log(self.log_path)
+
+    def test_load_rejects_oversized_integer_without_traceback(self):
+        """Huge JSON integers cannot escape as an uncaught parser error."""
+        oversized_integer = '9' * 5000
+        with open(self.log_path, 'w', encoding='utf-8') as log_file:
+            log_file.write(
+                '[{"timestamp":"2026-10-31T10:00:00Z","tool":"t",'
+                '"secret":"s","reason":"r","extra":' + oversized_integer + '}]'
+            )
+
+        with self.assertRaises(secret_audit_log.AuditLogError):
+            secret_audit_log.load_log(self.log_path)
+
+    def test_load_rejects_oversized_files(self):
+        """The reader bounds input before parsing it into memory."""
+        with open(self.log_path, 'wb') as log_file:
+            log_file.write(b'0' * (secret_audit_log.MAX_LOG_BYTES + 1))
+
+        with self.assertRaisesRegex(secret_audit_log.AuditLogError, 'too large'):
             secret_audit_log.load_log(self.log_path)
 
     def test_filter_by_tool(self):
@@ -229,7 +269,7 @@ class TestSecretAuditLog(unittest.TestCase):
         """CLI errors are concise and returned as a nonzero status."""
         stdout = StringIO()
         stderr = StringIO()
-        missing_path = self.log_path.with_name('missing.log')
+        missing_path = self.log_path.with_name(self.log_path.name + '.missing')
 
         with redirect_stdout(stdout), redirect_stderr(stderr):
             result = secret_audit_log.main([str(missing_path)])
