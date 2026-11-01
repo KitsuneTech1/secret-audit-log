@@ -1,31 +1,46 @@
 <p align="center"><a href="https://kitsunetechnologies.org/work"><img src="https://raw.githubusercontent.com/KitsuneTech1/.github/main/assets/kitsune-banner.svg" alt="Built by Kitsune Technologies" width="760"></a></p>
 
-# secret-audit-log
+# Secret Ledger
 
-Read a secret access trail without handling secret values.
+View audit logs of secret access without printing the secrets themselves.
 
-## What it does
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![Python 3](https://img.shields.io/badge/python-3-blue)
 
-The command reads access metadata and prints a table or JSON. Each event records
-when access was requested, which tool requested it, which secret name was used,
-and why.
+## Quick Start
 
-The output contains only these four metadata fields. The `secret` field must be
-the name of the secret, not its value. This program does not fetch, resolve, or
-redact values that were written into a log by mistake.
+Install Python 3 (included with most systems). Then read a log file:
+
+```bash
+python secret_audit_log.py audit.log
+```
+
+Output a JSON array instead of a table:
+
+```bash
+python secret_audit_log.py audit.log --format json
+```
+
+Filter by keyword and show only the last 5 events:
+
+```bash
+python secret_audit_log.py audit.log --filter timeout --limit 5
+```
+
+## How It Works
+
+The tool reads access metadata and prints a table or JSON. Each log entry captures when a secret was accessed, which tool accessed it, the secret name, and the reason.
+
+Output contains only four fields: timestamp, tool, secret name, and reason. The `secret` field is the name only, never the value. This tool does not attempt to fetch, resolve, or hide values that ended up in a log by mistake.
 
 ## Requirements
 
-Python 3 and the standard library. There is no package metadata in this small
-repository, so run the script directly.
+Python 3 and the standard library. No external dependencies.
 
-```bash
-python secret_audit_log.py <log_file> [options]
-```
+## Log Format
 
-## Log format
+The tool accepts three formats:
 
-The reader accepts a JSON array:
+**JSON array** (each entry has timestamp, tool, secret name, and reason):
 
 ```json
 [
@@ -38,46 +53,39 @@ The reader accepts a JSON array:
 ]
 ```
 
-It also accepts an object containing an `entries` array, or JSON Lines with one
-event object per line. Blank JSON Lines are ignored.
+**Wrapped in an entries object:**
 
-Every event must contain non-empty string values for `timestamp`, `tool`,
-`secret`, and `reason`. Timestamps must be ISO 8601 values. Invalid files are
-reported on stderr and do not produce partial output. Files larger than 16 MiB
-are rejected before parsing.
-
-## Usage
-
-Show all events as a table:
-
-```bash
-python secret_audit_log.py audit.log
+```json
+{
+  "entries": [
+    {
+      "timestamp": "2026-10-31T10:00:00Z",
+      "tool": "my-app",
+      "secret": "db_password",
+      "reason": "initialize connection"
+    }
+  ]
+}
 ```
 
-Select JSON output:
+**JSON Lines** (one entry per line):
 
-```bash
-python secret_audit_log.py audit.log --format json
+```
+{"timestamp":"2026-10-31T10:00:00Z","tool":"my-app","secret":"db_password","reason":"initialize connection"}
+{"timestamp":"2026-10-31T10:05:00Z","tool":"other","secret":"api_key","reason":"external call"}
 ```
 
-Filter with a case-insensitive substring. The filter searches the tool, secret
-name, and reason fields:
+Blank lines in JSON Lines format are skipped. All entries must have non-empty string values for `timestamp`, `tool`, `secret`, and `reason`. Timestamps must be ISO 8601 format. Files larger than 16 MiB are rejected.
 
-```bash
-python secret_audit_log.py audit.log --filter timeout
-```
+## Options
 
-Show only the last 10 events:
+`--format {table,json}` - Output as table (default) or JSON array.
 
-```bash
-python secret_audit_log.py audit.log --limit 10
-```
+`--filter TEXT` - Show only entries where tool, secret name, or reason contains TEXT (case-insensitive).
 
-`--limit 0` shows no events. Negative limits are rejected.
+`--limit N` - Show only the last N entries. Use `--limit 0` to show none.
 
-The command exits with status 0 on success and status 1 when the file cannot be
-read or does not match the log format. Argument errors use the normal argparse
-status 2.
+The command exits with status 0 on success, status 1 if the log cannot be read or is malformed, and status 2 for invalid arguments.
 
 ## Testing
 
