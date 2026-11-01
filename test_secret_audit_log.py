@@ -69,6 +69,14 @@ class TestSecretAuditLog(unittest.TestCase):
 
         self.assertEqual(secret_audit_log.load_log(self.log_path), self.sample_data)
 
+    def test_load_accepts_utf8_bom(self):
+        """Accept JSON files written with a UTF-8 byte-order mark."""
+        self.log_path.write_text(
+            json.dumps(self.sample_data), encoding='utf-8-sig'
+        )
+
+        self.assertEqual(secret_audit_log.load_log(self.log_path), self.sample_data)
+
     def test_load_rejects_invalid_shape(self):
         """Reject a JSON value that cannot contain audit entries."""
         self.write_log({'unexpected': []})
@@ -205,6 +213,17 @@ class TestSecretAuditLog(unittest.TestCase):
 
         self.assertIn('first line\\nsecond line', table)
         self.assertEqual(table.count('\n'), 2)
+
+    def test_table_escapes_terminal_control_characters(self):
+        """Table output cannot emit terminal control sequences from metadata."""
+        entry = dict(self.sample_data[0])
+        entry['tool'] = 'app\x1b[31m\x00'
+
+        table = secret_audit_log.format_table([entry])
+
+        self.assertIn(r'app\x1b[31m\x00', table)
+        self.assertNotIn('\x1b', table)
+        self.assertNotIn('\x00', table)
 
     def test_main_reports_missing_file_without_traceback(self):
         """CLI errors are concise and returned as a nonzero status."""
