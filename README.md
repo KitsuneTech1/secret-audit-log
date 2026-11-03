@@ -4,6 +4,7 @@
 
 View audit logs of secret access without printing the secrets themselves.
 
+[![Build Status](https://github.com/KitsuneTech1/secret-audit-log/actions/workflows/ci.yml/badge.svg)](https://github.com/KitsuneTech1/secret-audit-log/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) ![Python 3](https://img.shields.io/badge/python-3-blue)
 
 ## Quick Start
@@ -94,6 +95,17 @@ python -m unittest -v
 ```
 
 The tests use local temporary files only. They do not make network requests.
+
+
+## Architecture & Data Flow
+
+```mermaid
+flowchart TD
+    A[CLI Command: secret-audit-log] --> B[Parse Immutable Append-Only Audit Stream]
+    B --> C[Redaction Filter: Never Expose Secret Payloads]
+    C --> D[Query Filter: Agent ID, Role, Timestamp Window]
+    D --> E[Formatted Table / JSON Audit Report]
+```
 
 ## License
 
